@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SVG Live Editor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css">
+    <style>
+        /* Previous styles remain the same */
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .editor-container, .preview-container {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .CodeMirror {
+            height: 500px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .preview-wrapper {
+            position: relative;
+            padding: 20px 0 0 20px;
+        }
+        #svg-preview {
+            width: calc(100% - 20px);
+            height: 500px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+            overflow: hidden;
+            position: relative;
+            cursor: default;
+        }
+        #svg-viewport {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform-origin: center center;
+            cursor: default;
+            width: 100%;
+            height: 100%;
+        }
+        #svg-viewport.panning {
+            cursor: grabbing;
+        }
+        #svg-viewport svg {
+            width: 100%;
+            height: 100%;
+        }
+        .ruler {
+            position: absolute;
+            background: #f5f5f5;
+            z-index: 1;
+            overflow: hidden;
+        }
+        .ruler-x {
+            height: 20px;
+            left: 20px;
+            right: 0;
+            top: 0;
+        }
+        .ruler-y {
+            width: 20px;
+            top: 20px;
+            bottom: 0;
+            left: 0;
+        }
+        .ruler-content {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        .ruler-marker {
+            position: absolute;
+            font-size: 10px;
+            color: #666;
+        }
+        .ruler-x .ruler-marker {
+            top: 3px;
+            transform: translateX(-50%);
+            border-left: 1px solid #ccc;
+            padding-top: 8px;
+            height: 8px;
+        }
+        .ruler-y .ruler-marker {
+            left: 2px;
+            transform: translateY(-50%);
+            border-top: 1px solid #ccc;
+            padding-left: 2px;
+            width: 15px;
+        }
+        .zoom-info {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 2;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+            margin-bottom: 15px;
+        }
+        /* New styles for element highlighting */
+        #svg-viewport svg * {
+            cursor: pointer;
+        }
+        #svg-viewport svg *:hover {
+            outline: 2px solid rgba(0, 120, 255, 0.5);
+            outline-offset: 2px;
+        }
+        .cm-selected-element {
+            background-color: rgba(0, 120, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="editor-container">
+            <h2>SVG Editor</h2>
+            <textarea id="editor"></textarea>
+        </div>
+        <div class="preview-container">
+            <h2>Preview</h2>
+            <div class="preview-wrapper">
+                <div class="ruler ruler-x" id="ruler-x"><div class="ruler-content"></div></div>
+                <div class="ruler ruler-y" id="ruler-y"><div class="ruler-content"></div></div>
+                <div id="svg-preview">
+                    <div id="svg-viewport"></div>
+                    <div class="zoom-info">Zoom: 100%</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initial SVG content with unique IDs
+        const initialSvg = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <rect id="rect1" x="10" y="10" width="80" height="80" fill="none" stroke="black" />
+    <circle id="circle1" cx="50" cy="50" r="30" fill="none" stroke="black" />
+    <path id="path1" d="M20,20 L80,80" stroke="black" fill="none" />
+</svg>`;
+
+        // Initialize CodeMirror
+        const editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+            mode: 'xml',
+            theme: 'monokai',
+            lineNumbers: true,
+            autoCloseTags: true,
+            autoCloseBrackets: true,
+            lineWrapping: true,
+        });
+
+        // All previous variables and functions remain the same
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isPanning = false;
+        let startX = 0;
+        let startY = 0;
+        let viewBoxDimensions = { x: 0, y: 0, width: 100, height: 100 };
+        
+        const viewport = document.getElementById('svg-viewport');
+        const preview = document.getElementById('svg-preview');
+        const zoomInfo = document.querySelector('.zoom-info');
+        const rulerX = document.querySelector('#ruler-x .ruler-content');
+        const rulerY = document.querySelector('#ruler-y .ruler-content');
+
+        // Element selection handling
+        function handleElementClick(e) {
+            if (isPanning) return; // Don't select elements while panning
+            
+            const target = e.target;
+            if (target.tagName === 'svg') return; // Don't select the root SVG
+
+            // Get the element's markup
+            const elementMarkup = target.outerHTML;
+            
+            // Find the position of this element in the editor content
+            const editorContent = editor.getValue();
+            const elementPosition = editorContent.indexOf(elementMarkup);
+            
+            if (elementPosition !== -1) {
+                // Clear any existing markers
+                editor.getAllMarks().forEach(mark => mark.clear());
+                
+                // Find the start and end of the element
+                let startPos = elementPosition;
+                let endPos = elementPosition + elementMarkup.length;
+                
+                // Convert positions to line numbers and character positions
+                const startLine = editor.posFromIndex(startPos);
+                const endLine = editor.posFromIndex(endPos);
+                
+                // Highlight the element in the editor
+                editor.markText(startLine, endLine, {
+                    className: 'cm-selected-element'
+                });
+                
+                // Scroll the editor to show the selected element
+                editor.scrollIntoView({
+                    from: startLine,
+                    to: endLine
+                }, 20);
+            }
+        }
+
+        function updateTransform() {
+            viewport.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) scale(${scale})`;
+            zoomInfo.textContent = `Zoom: ${Math.round(scale * 100)}%`;
+            updateRulers();
+        }
+
+        function updateRulers() {
+            const stepX = Math.ceil(viewBoxDimensions.width / 10);
+            const stepY = Math.ceil(viewBoxDimensions.height / 10);
+            
+            rulerX.innerHTML = '';
+            rulerY.innerHTML = '';
+            
+            const visibleLeft = -offsetX / scale - viewBoxDimensions.width;
+            const visibleRight = -offsetX / scale + viewBoxDimensions.width;
+            const visibleTop = -offsetY / scale - viewBoxDimensions.height;
+            const visibleBottom = -offsetY / scale + viewBoxDimensions.height;
+            
+            for (let i = 0; i <= viewBoxDimensions.width; i += stepX) {
+                const marker = document.createElement('div');
+                marker.className = 'ruler-marker';
+                marker.textContent = i;
+                marker.style.left = `${(i / viewBoxDimensions.width * 100)}%`;
+                marker.style.transform = `translateX(-50%) scale(${1/scale})`;
+                rulerX.appendChild(marker);
+            }
+            
+            for (let i = 0; i <= viewBoxDimensions.height; i += stepY) {
+                const marker = document.createElement('div');
+                marker.className = 'ruler-marker';
+                marker.textContent = i;
+                marker.style.top = `${(i / viewBoxDimensions.height * 100)}%`;
+                marker.style.transform = `translateY(-50%) scale(${1/scale})`;
+                rulerY.appendChild(marker);
+            }
+            
+            rulerX.style.transform = `translateX(${offsetX}px) scale(${scale})`;
+            rulerY.style.transform = `translateY(${offsetY}px) scale(${scale})`;
+        }
+
+        // Mouse wheel zoom
+        preview.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY;
+            const zoomFactor = 0.9;
+            
+            const rect = preview.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left - rect.width / 2;
+            const mouseY = e.clientY - rect.top - rect.height / 2;
+
+            const oldScale = scale;
+            if (delta > 0) {
+                scale *= zoomFactor;
+            } else {
+                scale /= zoomFactor;
+            }
+            
+            scale = Math.min(Math.max(0.1, scale), 10);
+            
+            offsetX = mouseX + (offsetX - mouseX) * (scale / oldScale);
+            offsetY = mouseY + (offsetY - mouseY) * (scale / oldScale);
+            
+            updateTransform();
+        });
+
+        // Pan handling
+        preview.addEventListener('mousedown', (e) => {
+            if (e.button === 2) {
+                e.preventDefault();
+                isPanning = true;
+                startX = e.clientX - offsetX;
+                startY = e.clientY - offsetY;
+                viewport.classList.add('panning');
+            }
+        });
+
+        preview.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                offsetX = e.clientX - startX;
+                offsetY = e.clientY - startY;
+                updateTransform();
+            }
+        });
+
+        preview.addEventListener('mouseup', (e) => {
+            if (e.button === 2) {
+                isPanning = false;
+                viewport.classList.remove('panning');
+            }
+        });
+
+        preview.addEventListener('mouseleave', () => {
+            isPanning = false;
+            viewport.classList.remove('panning');
+        });
+
+        preview.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        // Update preview and add click handlers
+        function updatePreview() {
+            const svgContent = editor.getValue();
+            viewport.innerHTML = svgContent;
+            
+            // Add click handlers to all SVG elements
+            const svgElements = viewport.querySelectorAll('svg *');
+            svgElements.forEach(element => {
+                element.addEventListener('click', handleElementClick);
+            });
+            
+            const viewBoxMatch = svgContent.match(/viewBox="([^"]+)"/);
+            if (viewBoxMatch) {
+                const [x, y, width, height] = viewBoxMatch[1].split(' ').map(Number);
+                viewBoxDimensions = { x, y, width, height };
+                updateRulers();
+            }
+        }
+
+        // Update preview when editor content changes
+        editor.on('change', updatePreview);
+
+        // Set initial content and update preview
+        editor.setValue(initialSvg);
+        updateTransform();
+    </script>
+</body>
+</html>
